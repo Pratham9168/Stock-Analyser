@@ -15,6 +15,8 @@ import MarketOverview from './pages/MarketOverview';
 import ProTerminal from './pages/ProTerminal';
 import TradeDesk from './pages/TradeDesk';
 import DiscoveryFeed from './pages/DiscoveryFeed';
+import EquialphaDashboard from './pages/Equialpha';
+
 
 interface SnackbarState {
   open: boolean;
@@ -60,6 +62,7 @@ function AppContent(): React.JSX.Element {
             <Route path="/rejected" element={<RejectedStocks setSnack={setSnack} />} />
             <Route path="/summary" element={<Summary setSnack={setSnack} />} />
             <Route path="/ask-ai" element={<AskAI setSnack={setSnack} />} />
+            <Route path="/equialpha" element={<EquialphaDashboard />} />
             <Route path="*" element={<Navigate to="/overview" replace />} />
           </Routes>
         </Box>

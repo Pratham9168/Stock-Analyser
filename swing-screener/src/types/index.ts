@@ -41,6 +41,7 @@ export interface AnalysisResult {
 export interface StockData {
   symbol: string;
   name: string;
+  scanType?: string;
 }
 
 export interface ScanResult {

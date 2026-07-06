@@ -5,97 +5,91 @@ import { ScraperResult, StockData } from '../types';
 import * as puppeteer from 'puppeteer';
 
 export class ScraperService extends BaseService {
-  // Two scanner URLs as specified by user
-  private readonly SCANNER_URLS = [
-    'https://chartink.com/screener/shakeout-reversal?src=wassup',
-    'https://chartink.com/screener/copy-r2-bear-squeeze-setup-bss-13'
+  private readonly SCREENER_URLS: string[] = [
+    'https://chartink.com/screener/shakeout-reversal',
+    'https://chartink.com/screener/copy-r2-bear-squeeze-setup-bss-13',
   ];
 
   constructor() {
     super('ScraperService');
   }
 
-  /**
-   * Scrape stocks from all configured URLs and return deduplicated list
-   */
-  async scrapeFromMultipleUrls(date?: string): Promise<ScraperResult> {
-    const startTime = Date.now();
-    const allStocks: StockData[] = [];
-    const seenSymbols = new Set<string>();
-
-    this.logger.info(`Starting multi-URL scraping from ${this.SCANNER_URLS.length} sources...`);
-
-    for (const url of this.SCANNER_URLS) {
-      try {
-        this.logger.info(`Scraping from: ${url}`);
-        const result = await this.scrapeFromUrl(url, date);
-
-        // Deduplicate stocks
-        for (const stock of result.stocks) {
-          if (!seenSymbols.has(stock.symbol)) {
-            seenSymbols.add(stock.symbol);
-            allStocks.push(stock);
-          }
-        }
-
-        this.logger.info(`Found ${result.stocks.length} stocks from URL, ${allStocks.length} unique total`);
-      } catch (error) {
-        this.logger.error(`Failed to scrape from ${url}:`, error);
-        // Continue with other URLs
-      }
-    }
-
-    this.logger.info(`Multi-URL scraping completed! Total unique stocks: ${allStocks.length}`);
-
-    return {
-      stocks: allStocks,
-      totalCount: allStocks.length,
-      duration: Date.now() - startTime
-    };
+  // Called by ScanService
+  async scrapeFromMultipleUrls(): Promise<ScraperResult> {
+    return this.scrapeAllStocks();
   }
 
-  /**
-   * Scrape stocks from a single URL (legacy method for backward compatibility)
-   */
-  async scrapeAllStocks(date?: string): Promise<ScraperResult> {
-    return this.scrapeFromUrl(this.SCANNER_URLS[0], date);
-  }
-
-  /**
-   * Scrape stocks from a specific URL
-   */
-  private async scrapeFromUrl(baseUrl: string, date?: string): Promise<ScraperResult> {
+  async scrapeAllStocks(): Promise<ScraperResult> {
     const startTime = Date.now();
     let browser: puppeteer.Browser | null = null;
 
     try {
-      this.logger.info('Starting stock scraping process...');
-
+      this.logger.info(`🚀 Starting stock scraping process for ${this.SCREENER_URLS.length} Chartink screeners`);
+      
       browser = await this.launchBrowser();
-      const page = await browser.newPage();
+      const allStocks: StockData[] = [];
+      const seenSymbols = new Set<string>();
 
-      await this.setupPage(page);
-      await this.navigateToUrl(page, baseUrl, date);
+      for (const url of this.SCREENER_URLS) {
+        try {
+          const page = await browser.newPage();
+          await this.setupPage(page);
+          
+          this.logger.info(`🌐 Navigating to Chartink screener: ${url}`);
+          await this.navigateToUrl(page, url);
+          
+          // Wait for table to load
+          await this.delay(5000);
+          
+          // Check if page loaded correctly
+          const pageTitle = await page.title();
+          const pageUrl = page.url();
+          this.logger.info(`📄 Page loaded - Title: "${pageTitle}", URL: ${pageUrl}`);
+          
+          const totalStocks = await this.getTotalStockCount(page);
+          this.logger.info(`📈 Total stocks detected for ${url.split('/').pop()}: ${totalStocks}`);
 
-      // Get total count from the page text (e.g., "90 stocks (1 to 20)")
-      const totalStocks = await this.getTotalStockCount(page);
-      this.logger.info(`Total stocks on page: ${totalStocks}`);
-
-      if (totalStocks === 0) {
-        return {
-          stocks: [],
-          totalCount: 0,
-          duration: Date.now() - startTime
-        };
+          if (totalStocks > 0) {
+            const scanType = url.split('/').pop() || 'equialpha';
+            const stocks = await this.extractAllStocks(page, totalStocks, seenSymbols, scanType);
+            allStocks.push(...stocks);
+            this.logger.success(`✅ Found ${stocks.length} unique stocks from this screener`);
+            
+            if (stocks.length === 0 && totalStocks > 0) {
+              this.logger.warn(`⚠️ Detected ${totalStocks} stocks but extracted 0. This may indicate a table structure mismatch.`);
+            }
+          } else {
+            this.logger.warn(`⚠️ No stocks found. This could mean:
+              - The screener has no results for the selected date
+              - The page structure has changed
+              - The page failed to load properly`);
+            
+            const tableExists = await page.evaluate(() => {
+              const table = document.querySelector('table');
+              return table !== null;
+            });
+            
+            if (!tableExists) {
+              this.logger.error(`❌ No table element found on page. Page structure may be different.`);
+            } else {
+              this.logger.info(`✅ Table element exists but appears to be empty.`);
+            }
+          }
+          
+          await page.close();
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          this.logger.error(`❌ Error scraping from Chartink (${url}): ${errorMessage}`);
+          // Continue to the next URL even if one fails
+        }
       }
-
-      const stocks = await this.extractAllStocks(page, totalStocks);
-
-      this.logger.info(`Scraping completed! Total stocks scraped: ${stocks.length}`);
-
+      
+      this.logger.success(`\n🎉 Scraping completed! Total unique stocks: ${allStocks.length}`);
+      this.logger.info(`📊 Breakdown: ${allStocks.length} unique stocks after deduplication`);
+      
       return {
-        stocks,
-        totalCount: stocks.length,
+        stocks: allStocks,
+        totalCount: allStocks.length,
         duration: Date.now() - startTime
       };
 
@@ -108,15 +102,25 @@ export class ScraperService extends BaseService {
       };
     } finally {
       if (browser) {
-        await browser.close();
-        this.logger.info('Browser closed');
+        try {
+          const closePromise = browser.close();
+          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Close timeout')), 5000));
+          await Promise.race([closePromise, timeoutPromise]);
+          this.logger.info('Browser closed gracefully');
+        } catch (e) {
+          this.logger.warn('Browser close timed out or failed, forcing process kill');
+          if (browser.process()) {
+             browser.process()?.kill('SIGKILL');
+          }
+        }
       }
     }
   }
 
   private async launchBrowser(): Promise<puppeteer.Browser> {
-    const launchOptions: any = {
+    return await puppeteer.launch({
       headless: 'new',
+      protocolTimeout: 300000,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -125,14 +129,7 @@ export class ScraperService extends BaseService {
         '--disable-features=VizDisplayCompositor',
         '--disable-blink-features=AutomationControlled'
       ]
-    };
-
-    // Use system Chromium in Docker/cloud environments
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-      launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-    }
-
-    return await puppeteer.launch(launchOptions);
+    });
   }
 
   private async setupPage(page: puppeteer.Page): Promise<void> {
@@ -142,135 +139,129 @@ export class ScraperService extends BaseService {
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
   }
 
-  private async navigateToUrl(page: puppeteer.Page, baseUrl: string, date?: string): Promise<void> {
-    let url = baseUrl;
-    if (date) url += `&date=${date}`;
-
-    this.logger.info(`Navigating to: ${url}`);
-
-    await page.goto(url, {
-      waitUntil: 'domcontentloaded',
-      timeout: 120000
+  private async navigateToUrl(page: puppeteer.Page, url: string): Promise<void> {
+    this.logger.info(`🌐 Navigating to: ${url}`);
+    
+    await page.goto(url, { 
+      waitUntil: 'networkidle0', 
+      timeout: 120000 
     });
 
-    // Wait for initial page load
-    await new Promise(resolve => setTimeout(resolve, 5000));
-
-    // Try to click the "Run Scan" button if it exists (some screeners need this)
-    await this.clickRunScanButton(page);
-
-    // Wait for results to load after clicking Run Scan
-    await new Promise(resolve => setTimeout(resolve, 8000));
-
-    this.logger.info('Page loaded, starting stock collection...');
+    // Wait for page to fully load
+    await this.delay(10000);
+    
+    this.logger.info('✅ Page loaded');
   }
 
-  /**
-   * Click the "Run Scan" button if present on the page
-   */
-  private async clickRunScanButton(page: puppeteer.Page): Promise<void> {
-    try {
-      const clicked = await page.evaluate(() => {
-        // Look for "Run Scan" button or span
-        const elements = Array.from(document.querySelectorAll('button, span, a'));
-        const runScanBtn = elements.find(el => {
-          const text = el.textContent?.trim().toLowerCase() || '';
-          return text === 'run scan' || text.includes('run scan');
-        });
-
-        if (runScanBtn) {
-          // Scroll into view and click
-          runScanBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          (runScanBtn as HTMLElement).click();
-          return true;
-        }
-        return false;
-      });
-
-      if (clicked) {
-        this.logger.info('Clicked "Run Scan" button');
-        // Wait for the scan to complete
-        await new Promise(resolve => setTimeout(resolve, 5000));
-      } else {
-        this.logger.info('No "Run Scan" button found (results may auto-load)');
-      }
-    } catch (error) {
-      this.logger.warn('Could not click Run Scan button:', (error as Error).message);
-    }
-  }
-
-  /**
-   * Get total stock count from page text like "90 stocks (1 to 20)"
-   */
   private async getTotalStockCount(page: puppeteer.Page): Promise<number> {
     return await page.evaluate(() => {
-      // Look for text containing "X stocks"
+      // Look for text that contains "X stocks" or "X total"
       const allText = document.body.textContent || '';
-
-      // Pattern: "90 stocks" or "185 stocks"
-      const match = allText.match(/(\d+)\s+stocks/i);
-      if (match) {
-        return parseInt(match[1], 10);
+      
+      // Try to find patterns like "50 stocks" or "50 total"
+      const patterns = [
+        /(\d+)\s+stocks/i,
+        /(\d+)\s+total/i,
+        /showing.*?(\d+)/i,
+        /of\s+(\d+)/i
+      ];
+      
+      for (const pattern of patterns) {
+        const match = allText.match(pattern);
+        if (match) {
+          const count = parseInt(match[1]);
+          if (count > 0) {
+            return count;
+          }
+        }
       }
-
-      // Fallback: count rows in the table
-      const tables = document.querySelectorAll('table');
-      const stockTable = tables.length > 1 ? tables[1] : tables[0];
-      if (stockTable) {
-        const rows = stockTable.querySelectorAll('tbody tr');
-        return rows.length;
-      }
-
-      return 0;
+      
+      // If no pattern found, count the rows directly
+      const rows = document.querySelectorAll('table tbody tr');
+      return rows.length;
     });
   }
 
-  /**
-   * Extract all stocks by paginating through all pages
-   */
-  private async extractAllStocks(page: puppeteer.Page, totalStocks: number): Promise<StockData[]> {
+  private async extractAllStocks(page: puppeteer.Page, totalStocks: number, globalSeenSymbols: Set<string>, scanType: string): Promise<StockData[]> {
     const allStocks: StockData[] = [];
-    const seenSymbols = new Set<string>();
+    const localSeenSymbols = new Set<string>(); // For deduplication within this source
     let currentPage = 1;
+    let maxPages = Math.ceil(totalStocks / 20);
+    
+    // If we couldn't determine total count (0), set a reasonable limit
+    // If totalStocks is known but < 20, we likely only have 1 page
+    if (totalStocks === 0) {
+      maxPages = 10; // Process up to 10 pages when count is unknown
+      this.logger.info('Total count unknown, will process up to 10 pages');
+    } else {
+      // Calculate actual pages needed, but cap at 10 for safety
+      maxPages = Math.max(1, Math.min(maxPages, 10));
+      this.logger.info(`Will process up to ${maxPages} pages (${totalStocks} stocks total)`);
+    }
 
-    // Calculate max pages: 20 stocks per page
-    const maxPages = Math.ceil(totalStocks / 20);
-    this.logger.info(`Will process up to ${maxPages} pages for ${totalStocks} stocks`);
+    let previousPageStockCount = 0;
+    let consecutiveDuplicatePages = 0;
 
     while (currentPage <= maxPages) {
-      this.logger.info(`Processing page ${currentPage}/${maxPages}...`);
+      this.logger.info(`📄 Processing page ${currentPage}/${maxPages}...`);
 
       const pageStocks = await this.extractPageStocks(page);
-
-      // Add unique stocks
-      let newCount = 0;
-      for (const stock of pageStocks) {
-        if (!seenSymbols.has(stock.symbol)) {
-          seenSymbols.add(stock.symbol);
-          allStocks.push(stock);
-          newCount++;
+      
+      // If no stocks found on this page, we've reached the end
+      if (pageStocks.length === 0) {
+        this.logger.info('No stocks found on this page, stopping pagination');
+        break;
+      }
+      
+      // Check if we're getting the same stocks as previous page (pagination not working)
+      if (currentPage > 1 && pageStocks.length === previousPageStockCount) {
+        const allSameStocks = pageStocks.every((stock: StockData) => localSeenSymbols.has(stock.symbol));
+        if (allSameStocks) {
+          consecutiveDuplicatePages++;
+          this.logger.warn(`⚠️ Page ${currentPage}: Found same ${pageStocks.length} stocks as previous page (possible pagination issue)`);
+          
+          // If we get duplicate pages twice in a row, stop pagination
+          if (consecutiveDuplicatePages >= 2) {
+            this.logger.warn('🛑 Stopping pagination: Multiple consecutive pages with identical stocks detected');
+            break;
+          }
+        } else {
+          consecutiveDuplicatePages = 0; // Reset counter if we got new stocks
         }
+      } else {
+        consecutiveDuplicatePages = 0; // Reset counter on first page or when count changes
       }
+      
+      previousPageStockCount = pageStocks.length;
+      
+      // Add unique stocks (check both local and global deduplication)
+      let newStocksCount = 0;
+      pageStocks.forEach((stock: StockData) => {
+        // Skip if already seen globally (from other sources) or locally (within this source)
+        if (!globalSeenSymbols.has(stock.symbol) && !localSeenSymbols.has(stock.symbol)) {
+          localSeenSymbols.add(stock.symbol);
+          globalSeenSymbols.add(stock.symbol); // Mark as seen globally
+          stock.scanType = scanType;
+          allStocks.push(stock);
+          newStocksCount++;
+        }
+      });
 
-      this.logger.info(`Page ${currentPage}: Found ${pageStocks.length} stocks, ${newCount} new, Total: ${allStocks.length}`);
+      this.logger.info(`📊 Page ${currentPage}: Found ${pageStocks.length} stocks, ${newStocksCount} new unique, Total unique from this source: ${allStocks.length}`);
 
-      // If we've collected all stocks, stop
-      if (allStocks.length >= totalStocks) {
-        this.logger.info(`Collected all ${totalStocks} stocks, stopping`);
+      // If no new stocks found and we've processed at least one page, we're done
+      if (currentPage > 1 && newStocksCount === 0) {
+        this.logger.info('No new stocks found on this page, stopping pagination');
         break;
       }
 
-      // If this is the last page, stop
-      if (currentPage >= maxPages) {
-        this.logger.info('Reached last page');
-        break;
-      }
-
-      // Navigate to next page
-      const hasNextPage = await this.navigateToNextPage(page);
-      if (!hasNextPage) {
-        this.logger.info('No next page available, stopping');
-        break;
+      // Navigate to next page if not the last page
+      if (currentPage < maxPages) {
+        const hasNextPage = await this.navigateToNextPage(page);
+        if (!hasNextPage) {
+          this.logger.info('No next page available, stopping pagination');
+          break;
+        }
       }
 
       currentPage++;
@@ -282,88 +273,145 @@ export class ScraperService extends BaseService {
   private async extractPageStocks(page: puppeteer.Page): Promise<StockData[]> {
     return await page.evaluate(() => {
       const stocks: StockData[] = [];
-
-      // Chartink has multiple tables - stock data is in the SECOND table (index 1)
-      const tables = document.querySelectorAll('table');
-      const stockTable = tables.length > 1 ? tables[1] : tables[0];
-
-      if (!stockTable) return stocks;
-
-      const rows = stockTable.querySelectorAll('tbody tr');
-
+      const rows = document.querySelectorAll('table tbody tr');
+      
       rows.forEach(row => {
         const cells = row.querySelectorAll('td');
         if (cells.length >= 3) {
-          // Chartink table structure:
-          // Column 0 (index 0): Serial Number (Sr.)
-          // Column 1 (index 1): Stock Name (inside <a> tag)
-          // Column 2 (index 2): Symbol (inside <a> tag)
-
-          // Get name from column 1 - may be in an <a> tag
-          const nameCell = cells[1];
-          const nameLink = nameCell?.querySelector('a');
-          const name = (nameLink?.textContent || nameCell?.textContent || '').trim();
-
-          // Get symbol from column 2 - may be in an <a> tag
-          const symbolCell = cells[2];
-          const symbolLink = symbolCell?.querySelector('a');
-          const symbol = (symbolLink?.textContent || symbolCell?.textContent || '').trim();
-
+          // Based on the table structure:
+          // Column 0: Row number
+          // Column 1: Company name  
+          // Column 2: Stock symbol
+          const name = cells[1]?.textContent?.trim() || '';
+          const symbol = cells[2]?.textContent?.trim() || '';
+          
           if (symbol && name) {
             stocks.push({ symbol, name });
           }
         }
       });
-
+      
       return stocks;
     });
   }
 
   private async navigateToNextPage(page: puppeteer.Page): Promise<boolean> {
     try {
-      // Find and click the Next button
-      const success = await page.evaluate(() => {
-        // Look for buttons containing "Next" text
-        const buttons = Array.from(document.querySelectorAll('button'));
+      // Capture current URL and first stock symbol for comparison
+      const beforeNavigation = await page.evaluate(() => {
+        const firstRow = document.querySelector('table tbody tr');
+        const firstSymbol = firstRow?.querySelectorAll('td')[2]?.textContent?.trim() || '';
+        return {
+          url: window.location.href,
+          firstSymbol: firstSymbol
+        };
+      });
+
+      // Use page.evaluate to find and click the next button
+      const buttonInfo = await page.evaluate(() => {
+        // Look for buttons or links containing "Next"
+        const buttons = Array.from(document.querySelectorAll('button, a'));
         const nextButton = buttons.find(btn => {
           const text = btn.textContent?.toLowerCase() || '';
-          return text.includes('next');
+          const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
+          const title = btn.getAttribute('title')?.toLowerCase() || '';
+          return text.includes('next') || ariaLabel.includes('next') || title.includes('next');
         });
-
+        
         if (nextButton) {
-          // Check if the button is disabled
-          const isDisabled = nextButton.disabled ||
-            nextButton.classList.contains('disabled') ||
-            nextButton.getAttribute('disabled') !== null;
-
-          if (!isDisabled) {
-            nextButton.click();
-            return true;
-          }
+          const isDisabled = nextButton.classList.contains('disabled') || 
+                           nextButton.hasAttribute('disabled') ||
+                           nextButton.getAttribute('aria-disabled') === 'true';
+          return {
+            found: true,
+            disabled: isDisabled,
+            tagName: nextButton.tagName,
+            classes: Array.from(nextButton.classList).join(' ')
+          };
         }
+        
+        // Also check for pagination elements (page numbers, arrows, etc.)
+        const paginationInfo = {
+          paginationElements: document.querySelectorAll('[class*="pagination"], [class*="page"]').length,
+          arrows: document.querySelectorAll('[class*="arrow"], [class*="chevron"]').length
+        };
+        
+        return {
+          found: false,
+          disabled: false,
+          paginationInfo: paginationInfo
+        };
+      });
 
+      if (!buttonInfo.found) {
+        this.logger.warn('Next button not found', {
+          paginationElements: buttonInfo.paginationInfo?.paginationElements || 0,
+          arrows: buttonInfo.paginationInfo?.arrows || 0
+        });
+        return false;
+      }
+
+      if (buttonInfo.disabled) {
+        this.logger.info('Next button is disabled - no more pages available');
+        return false;
+      }
+
+      // Click the next button
+      const clickSuccess = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, a'));
+        const nextButton = buttons.find(btn => {
+          const text = btn.textContent?.toLowerCase() || '';
+          const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
+          const title = btn.getAttribute('title')?.toLowerCase() || '';
+          return text.includes('next') || ariaLabel.includes('next') || title.includes('next');
+        });
+        
+        if (nextButton && !nextButton.classList.contains('disabled')) {
+          (nextButton as HTMLElement).click();
+          return true;
+        }
         return false;
       });
 
-      if (success) {
-        // Wait for the page content to update
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        // Wait for network to settle
-        try {
-          await page.waitForNetworkIdle({ timeout: 5000 });
-        } catch (e) {
-          // Ignore timeout, table might have already updated
-        }
-
-        // Additional wait for DOM to update
-        await new Promise(resolve => setTimeout(resolve, 1000));
-
-        return true;
-      } else {
-        this.logger.warn('Next button not found or disabled');
+      if (!clickSuccess) {
+        this.logger.warn('Failed to click next button');
         return false;
       }
+
+      // Wait for navigation/update
+      await this.delay(3000);
+      
+      try {
+        await page.waitForNetworkIdle({ timeout: 10000 });
+      } catch (e) {
+        this.logger.debug('Network idle timeout, continuing anyway');
+      }
+
+      // Verify that we actually moved to a new page
+      const afterNavigation = await page.evaluate(() => {
+        const firstRow = document.querySelector('table tbody tr');
+        const firstSymbol = firstRow?.querySelectorAll('td')[2]?.textContent?.trim() || '';
+        return {
+          url: window.location.href,
+          firstSymbol: firstSymbol
+        };
+      });
+
+      // Check if page actually changed
+      if (beforeNavigation.firstSymbol && afterNavigation.firstSymbol === beforeNavigation.firstSymbol) {
+        this.logger.warn('⚠️ Pagination click succeeded but page content unchanged', {
+          before: beforeNavigation.firstSymbol,
+          after: afterNavigation.firstSymbol,
+          urlChanged: beforeNavigation.url !== afterNavigation.url
+        });
+        // Still return true to let the duplicate detection handle it
+      } else {
+        this.logger.debug('✅ Successfully navigated to next page', {
+          urlChanged: beforeNavigation.url !== afterNavigation.url
+        });
+      }
+
+      return true;
     } catch (error) {
       this.logger.error('Error navigating to next page:', (error as Error).message);
       return false;

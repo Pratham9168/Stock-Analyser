@@ -31,11 +31,11 @@ export class StockAnalysisService extends BaseService {
     try {
       this.validateRequired(input, ['symbol', 'dailyBars']);
 
-      // Need at least 80 bars for proper EMA calculation and 60-day consolidation window
-      if (input.dailyBars.length < 80) {
+      // Need at least 70 bars for proper EMA calculation and 60-day consolidation window
+      if (input.dailyBars.length < 70) {
         return this.createRejectedResult(
           'Insufficient data',
-          'Need at least 80 days of data for reliable analysis',
+          'Need at least 70 days of data for reliable analysis',
           startTime,
           input.dailyBars.length,
           0

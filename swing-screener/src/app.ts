@@ -46,6 +46,15 @@ import { TradeIdeaService } from './services/TradeIdeaService';
 // Repositories
 import { StockRepository } from './repositories/StockRepository';
 import { PortfolioRepository } from './repositories/PortfolioRepository';
+import { EquialphaRepository } from './repositories/EquialphaRepository';
+import { EquialphaScoresRepository } from './repositories/EquialphaScoresRepository';
+
+// Equialpha Services
+import { EquialphaScoreService } from './services/equialpha/EquialphaScoreService';
+import { EquialphaPipelineService } from './services/equialpha/EquialphaPipelineService';
+import { YahooBrowserService } from './services/YahooBrowserService';
+
+
 
 // Controllers are imported in routes
 
@@ -109,7 +118,8 @@ export class App {
     const limiter = rateLimit({
       windowMs: 15 * 60 * 1000, // 15 minutes
       max: 100, // limit each IP to 100 requests per windowMs
-      message: 'Too many requests from this IP, please try again later.'
+      message: 'Too many requests from this IP, please try again later.',
+      skip: (req) => req.path.startsWith('/equialpha/') // Equialpha dashboard polls frequently
     });
     this.app.use('/api/', limiter);
 
@@ -229,6 +239,20 @@ export class App {
       this.pool
     );
 
+    // Initialize Equialpha Services
+    const yahooBrowserService = new YahooBrowserService();
+    const equialphaRepo = new EquialphaRepository(this.pool);
+    const equialphaScoresRepo = new EquialphaScoresRepository(this.pool);
+    const equialphaScoreService = new EquialphaScoreService(equialphaRepo, equialphaScoresRepo);
+    const equialphaPipelineService = new EquialphaPipelineService(
+      equialphaRepo,
+      equialphaScoresRepo,
+      nseDataService,
+      yahooBrowserService,
+      scraperService,
+      equialphaScoreService
+    );
+
     // Store services in app for use in controllers
     this.app.locals.services = {
       scanService,
@@ -260,6 +284,7 @@ export class App {
       multiTimeframeService,
       watchlistService,
       tradeIdeaService,
+      equialphaPipelineService,
     };
 
     this.app.locals.repositories = {

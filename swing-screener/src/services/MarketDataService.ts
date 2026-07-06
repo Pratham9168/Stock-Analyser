@@ -38,57 +38,9 @@ export class MarketDataService extends BaseService {
      * Strategy: Try NSE → fallback to Yahoo
      */
     async fetchDailyBarsWithQuote(symbol: string, days: number = 120): Promise<ChartResult> {
-        // Try NSE first (for Indian stocks)
-        if (this.nseAvailable && this.nseInitialized) {
-            try {
-                const nseSymbol = this.toNseSymbol(symbol);
-                if (nseSymbol) {
-                    const [quote, history] = await Promise.all([
-                        this.nseService.fetchQuote(nseSymbol),
-                        this.nseService.fetchHistoricalData(
-                            nseSymbol,
-                            new Date(Date.now() - days * 24 * 60 * 60 * 1000),
-                            new Date(),
-                        ),
-                    ]);
-
-                    if (history.length > 0) {
-                        const bars: DailyBar[] = history.map(h => ({
-                            date: h.date,
-                            open: h.open,
-                            high: h.high,
-                            low: h.low,
-                            close: h.close,
-                            volume: h.volume,
-                        }));
-
-                        const quoteData: QuoteData = {
-                            symbol: nseSymbol,
-                            price: quote.lastPrice,
-                            change: quote.change,
-                            changePercent: quote.pChange,
-                            high: quote.dayHigh,
-                            low: quote.dayLow,
-                            volume: quote.totalTradedVolume,
-                            previousClose: quote.previousClose,
-                            fiftyTwoWeekHigh: quote.yearHigh,
-                            fiftyTwoWeekLow: quote.yearLow,
-                            currency: 'INR',
-                            exchangeName: 'NSE',
-                        };
-
-                        this.logger.info(`[NSE] Fetched ${bars.length} bars + quote for ${nseSymbol}`);
-                        return { bars, quote: quoteData, chartMeta: { source: 'NSE' } };
-                    }
-                }
-            } catch (error: any) {
-                this.logger.warn(
-                    `[NSE] Failed for ${symbol}, falling back to Yahoo: ${error.message}`,
-                );
-            }
-        }
-
-        // Fallback: Yahoo
+        // NOTE: NSE India completely removed their public /api/historical/cm/equity endpoint
+        // resulting in permanent 404s. To prevent 2-second timeouts and warning spam per stock,
+        // we instantly use the highly resilient YahooBrowserService for fetching historical bars.
         return await this.yahooBrowser.fetchDailyBarsWithQuote(symbol, days);
     }
 
@@ -96,39 +48,7 @@ export class MarketDataService extends BaseService {
      * Fetch daily OHLCV bars only
      */
     async fetchDailyBars(symbol: string, days: number = 120): Promise<{ bars: DailyBar[]; chartMeta?: any }> {
-        // Try NSE first
-        if (this.nseAvailable && this.nseInitialized) {
-            try {
-                const nseSymbol = this.toNseSymbol(symbol);
-                if (nseSymbol) {
-                    const history = await this.nseService.fetchHistoricalData(
-                        nseSymbol,
-                        new Date(Date.now() - days * 24 * 60 * 60 * 1000),
-                        new Date(),
-                    );
-
-                    if (history.length > 0) {
-                        const bars: DailyBar[] = history.map(h => ({
-                            date: h.date,
-                            open: h.open,
-                            high: h.high,
-                            low: h.low,
-                            close: h.close,
-                            volume: h.volume,
-                        }));
-
-                        this.logger.info(`[NSE] Fetched ${bars.length} bars for ${nseSymbol}`);
-                        return { bars };
-                    }
-                }
-            } catch (error: any) {
-                this.logger.warn(
-                    `[NSE] fetchDailyBars failed for ${symbol}, falling back to Yahoo: ${error.message}`,
-                );
-            }
-        }
-
-        // Fallback: Yahoo
+        // See note above: NSE historical API is offline. Directing to Yahoo.
         return await this.yahooBrowser.fetchDailyBars(symbol, days);
     }
 

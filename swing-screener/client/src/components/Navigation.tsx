@@ -59,6 +59,7 @@ const Navigation: React.FC<NavigationProps> = ({ currentPage, onNavigate }) => {
   const navigate = useNavigate();
 
   const menuItems = [
+    { id: 'equialpha', label: 'Equialpha Platform', icon: <Explore />, color: 'primary' },
     { id: 'overview', label: 'Market Overview', icon: <Dashboard />, color: 'primary' },
     { id: 'terminal', label: 'Pro Terminal', icon: <Analytics />, color: 'secondary' },
     { id: 'trade', label: 'Trade Desk', icon: <AccountBalance />, color: 'success' },

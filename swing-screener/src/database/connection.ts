@@ -30,7 +30,10 @@ export function createDatabaseConnection(config: DatabaseConfig): Pool {
       ssl: config.ssl,
       max: config.max,
       idleTimeoutMillis: config.idleTimeoutMillis,
-      connectionTimeoutMillis: config.connectionTimeoutMillis
+      connectionTimeoutMillis: config.connectionTimeoutMillis,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000,
+      statement_timeout: 60000,
     };
     logger.info('Using individual DB connection parameters');
   }

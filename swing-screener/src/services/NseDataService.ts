@@ -9,6 +9,7 @@ import { NseSessionService } from './NseSessionService';
 export interface NseQuote {
   symbol: string;
   companyName: string;
+  industry?: string;
   lastPrice: number;
   change: number;
   pChange: number;
@@ -154,6 +155,7 @@ export class NseDataService extends BaseService {
     return {
       symbol: raw.info?.symbol || symbol.toUpperCase(),
       companyName: raw.info?.companyName || '',
+      industry: raw.info?.industry || '',
       lastPrice: raw.priceInfo?.lastPrice ?? 0,
       change: raw.priceInfo?.change ?? 0,
       pChange: raw.priceInfo?.pChange ?? 0,
@@ -473,11 +475,11 @@ export class NseDataService extends BaseService {
 
   /**
    * List F&O eligible stocks
-   * Endpoint: /api/equity-stockIndices?index=SECURITIES IN F%26O
+   * Endpoint: /api/equity-stock?index=SECURITIES IN F%26O
    */
   async fetchFnoStocks(): Promise<NseMarketMover[]> {
     const raw = await this.session.request<any>(
-      `${this.session.apiUrl}/equity-stockIndices`,
+      `${this.session.apiUrl}/equity-stock`,
       { index: 'SECURITIES IN F%26O' },
     );
 
@@ -499,13 +501,54 @@ export class NseDataService extends BaseService {
 
   /**
    * List stocks by index
-   * Endpoint: /api/equity-stockIndices?index=NIFTY 50
+   * Endpoint: /api/equity-stock?index=NIFTY 50
    */
   async fetchStocksByIndex(index: string = 'NIFTY 50'): Promise<any> {
     return this.session.request(
-      `${this.session.apiUrl}/equity-stockIndices`,
+      `${this.session.apiUrl}/equity-stock`,
       { index },
     );
+  }
+
+  /**
+   * Fetch all active equities from the NSE Archives (EQUITY_L.csv)
+   * This yields ~2,100 active stocks (EQ series).
+   */
+  async fetchAllActiveEquities(): Promise<{ symbol: string; companyName: string }[]> {
+    try {
+      const response = await fetch('https://archives.nseindia.com/content/equities/EQUITY_L.csv');
+      if (!response.ok) {
+        throw new Error(`Failed to fetch EQUITY_L.csv: ${response.status}`);
+      }
+      
+      const csvText = await response.text();
+      const lines = csvText.split('\n');
+      const stocks: { symbol: string; companyName: string }[] = [];
+      
+      // Skip header line (index 0)
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        
+        const cols = line.split(',');
+        if (cols.length >= 3) {
+          const symbol = cols[0]?.trim();
+          const name = cols[1]?.trim();
+          const series = cols[2]?.trim();
+          
+          // Only include standard equity series ('EQ', 'BE', 'SM', etc. - typically EQ is the primary)
+          // We include 'EQ' and 'BE' (Book Entry - trade to trade) as they are active stocks
+          if (symbol && (series === 'EQ' || series === 'BE' || series === 'SM')) {
+            stocks.push({ symbol, companyName: name || symbol });
+          }
+        }
+      }
+      
+      return stocks;
+    } catch (e) {
+      this.logger.error('Error fetching all active equities from NSE', e);
+      return [];
+    }
   }
 
   /**
@@ -641,6 +684,14 @@ export class NseDataService extends BaseService {
    */
   getSession(): NseSessionService {
     return this.session;
+  }
+
+  /**
+   * Check if NSE is available (circuit breaker).
+   * Returns false after 5+ consecutive failures — callers should skip NSE.
+   */
+  isAvailable(): boolean {
+    return this.session.isAvailable();
   }
 
   // ── Helpers ──────────────────────────────────────────────────

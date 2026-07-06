@@ -21,6 +21,8 @@ import { createEventCalendarRoutes } from './eventCalendarRoutes';
 import { createMultiTimeframeRoutes } from './multiTimeframeRoutes';
 import { createWatchlistRoutes } from './watchlistRoutes';
 import { createTradeIdeaRoutes } from './tradeIdeaRoutes';
+import { setupEquialphaRoutes } from './equialphaRoutes';
+import { createJournalRoutes } from './journalRoutes';
 
 export function createRoutes(services: any, _repositories: any, pool: any): Router {
   const router = Router();
@@ -164,6 +166,15 @@ export function createRoutes(services: any, _repositories: any, pool: any): Rout
   if (services.tradeIdeaService) {
     const tradeIdeaRoutes = createTradeIdeaRoutes(services.tradeIdeaService);
     router.use('/ideas', tradeIdeaRoutes);
+  }
+
+  // Equialpha Platform Routes
+  if (services.equialphaPipelineService) {
+      const equialphaRoutes = setupEquialphaRoutes(pool, services.equialphaPipelineService);
+      router.use('/equialpha', equialphaRoutes);
+      
+      const journalRoutes = createJournalRoutes(pool);
+      router.use('/equialpha/journal', journalRoutes);
   }
 
   return router;

@@ -59,6 +59,7 @@ export class YahooBrowserService extends BaseService {
 
             this.browser = await puppeteer.launch({
                 headless: "new",
+                protocolTimeout: 300000,
                 ...(process.env.PUPPETEER_EXECUTABLE_PATH && {
                     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH
                 }),
@@ -77,6 +78,20 @@ export class YahooBrowserService extends BaseService {
                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             );
             await this.page.setViewport({ width: 1920, height: 1080 });
+
+            // Aggressive block of ads, images, and subframes to prevent background crashes
+            await this.page.setRequestInterception(true);
+            this.page.on('request', (req) => {
+                if (req.isInterceptResolutionHandled()) return;
+                const type = req.resourceType();
+                // Block all subframes (ads) and non-essential resources permanently
+                if (['image', 'stylesheet', 'font', 'media', 'other'].includes(type) || 
+                   (type === 'document' && req.frame() !== this.page!.mainFrame())) {
+                    req.abort().catch(() => {});
+                } else {
+                    req.continue().catch(() => {});
+                }
+            });
 
             // Establish session
             this.logger.info('Establishing Yahoo Finance session...');
@@ -129,7 +144,7 @@ export class YahooBrowserService extends BaseService {
     }
 
     private formatSymbol(symbol: string): string {
-        if (symbol.includes('.')) return symbol;
+        if (symbol.includes('.') || symbol.startsWith('^')) return symbol;
         return `${symbol}.NS`;
     }
 

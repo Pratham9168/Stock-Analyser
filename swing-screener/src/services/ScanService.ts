@@ -92,7 +92,7 @@ export class ScanService extends BaseService {
           const { bars: dailyBars, quote: quoteData, chartMeta } = await this.marketDataService.fetchDailyBarsWithQuote(stock.symbol, 120);
 
           // Check if we have enough data
-          if (dailyBars.length < 80) {
+          if (dailyBars.length < 70) {
             this.logger.warn(`Insufficient data for ${stock.symbol}: ${dailyBars.length} bars`);
 
             // Save what data we have
@@ -103,7 +103,7 @@ export class ScanService extends BaseService {
               qualified: false,
               score: 0,
               failedAt: 0,
-              reason: `Insufficient data: ${dailyBars.length} bars (need 80+)`,
+              reason: `Insufficient data: ${dailyBars.length} bars (need 70+)`,
               currentPrice: quoteData?.price || (dailyBars.length > 0 ? dailyBars[dailyBars.length - 1].close : 0),
               details: {
                 consolidation: { pass: false, status: 'insufficient_data', reason: 'Not enough data', base: 0, currentPrice: 0, ema10Current: 0, percentGain: 0, zoneCount: 0, zones: [] },
@@ -400,12 +400,12 @@ export class ScanService extends BaseService {
     // Fetch real price data
     const { bars: dailyBars } = await this.marketDataService.fetchDailyBars(symbol, lookbackDays);
 
-    if (dailyBars.length < 80) {
+    if (dailyBars.length < 70) {
       return {
         symbol,
         qualified: false,
         score: 0,
-        reason: `Insufficient data: ${dailyBars.length} bars (need 80+)`,
+        reason: `Insufficient data: ${dailyBars.length} bars (need 70+)`,
         details: null
       };
     }
